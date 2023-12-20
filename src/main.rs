@@ -1,11 +1,10 @@
-use std::{io, thread, time};
+use std::{io, thread};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::io::BufReader;
-use std::io::prelude::*;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use lazy_static::lazy_static;
 
@@ -52,6 +51,8 @@ lazy_static! {
     static ref OPAQUE: Mutex<u32> = Mutex::new(0);
 
     static ref OPAQUE_MAP: Mutex<HashMap<u32, PacketCallback>> = Mutex::new(HashMap::new());
+
+    static ref FEATURE_MAP: Mutex<HashMap<u16, bool>> = Mutex::new(HashMap::new());
 }
 
 fn append_uleb128_32(b: &mut Vec<u8>, mut v: u32) {
@@ -185,12 +186,13 @@ struct ServerDurationFrame {
 }
 
 type PacketCallback = fn(&Packet);
+type ListenerCallback = fn(&Packet);
 
 pub struct Packet {
     magic: CmdMagic,
     command: CmdCode,
     datatype: u8,
-    status: u16,
+    status: StatusCode,
     v_bucket: u16,
     opaque: u32,
     cas: u64,
@@ -394,7 +396,7 @@ impl Packet {
         packet.key = Vec::from(&body_buf[frames_len + ext_len as usize..frames_len + ext_len as usize + key_len as usize]);
         packet.value = Vec::from(&body_buf[frames_len + ext_len as usize + key_len as usize..]);
 
-        if true /* todo: IsFeatureEnabled(FeatureCollections) */ {
+        if FEATURE_MAP.lock().unwrap().contains_key(&0x12) {
             if packet.command == 0x92 {
                 return Err(io::Error::new(io::ErrorKind::Other, "the observe operation is not supported with collections enabled"));
             }
@@ -414,7 +416,7 @@ impl Packet {
         encoded_key = self.key.clone();
         let extras = &self.extras;
 
-        if true /* todo: IsFeatureEnabled(FeatureCollections) */ {
+        if FEATURE_MAP.lock().unwrap().contains_key(&0x12) {
             if self.command == 0x92 {
                 return Err(io::Error::new(io::ErrorKind::Other, "the observe operation is not supported with collections enabled"));
             }
@@ -476,7 +478,7 @@ impl Packet {
         if frames_len > 0 {
             match pkt_magic {
                 0x80 => {
-                    if !true /* todo !IsFeatureEnabled(FeatureAltRequests) */ {
+                    if !FEATURE_MAP.lock().unwrap().contains_key(&0x10) {
                         return Err(io::Error::new(io::ErrorKind::Other, "cannot use frames in req packets without enabling the feature"));
                     }
 
@@ -542,7 +544,9 @@ impl Packet {
                 return Err(io::Error::new(io::ErrorKind::Other, "cannot use durability level frame in non-request packets"));
             }
 
-            /* todo: IsFeatureEnabled(FeatureSyncReplication) */
+            if !FEATURE_MAP.lock().unwrap().contains_key(&0x11) {
+                return Err(io::Error::new(io::ErrorKind::Other, "cannot use sync replication frames without enabling the feature"));
+            }
 
             if self.durability_level_frame.is_none() && self.durability_timeout_frame.is_some() {
                 return Err(io::Error::new(io::ErrorKind::Other, "cannot encode durability timeout frame without durability level frame"));
@@ -572,7 +576,9 @@ impl Packet {
                 return Err(io::Error::new(io::ErrorKind::Other, "cannot use open tracing frame in non-request packets"));
             }
 
-            /* todo !IsFeatureEnabled(FeatureOpenTracing) */
+            if !FEATURE_MAP.lock().unwrap().contains_key(&0x13) {
+                return Err(io::Error::new(io::ErrorKind::Other, "cannot use open tracing frames without enabling the feature"));
+            }
 
             let trace_ctx_len = self.open_tracing_frame.as_ref().unwrap().trace_context.len();
             write_frame_header(&mut buffer, 3, trace_ctx_len as u8)?;
@@ -584,7 +590,9 @@ impl Packet {
                 return Err(io::Error::new(io::ErrorKind::Other, "cannot use server duration frame in non-response packets"));
             }
 
-            /* todo: !IsFeatureEnabled(FeatureDurations) */
+            if !FEATURE_MAP.lock().unwrap().contains_key(&0xf) {
+                return Err(io::Error::new(io::ErrorKind::Other, "cannot use server duration frames without enabling the feature"));
+            }
 
             write_frame_header(&mut buffer, 0, 2)?;
             buffer.write_u16::<BigEndian>(self.server_duration_frame.as_ref().unwrap().server_duration as u16)?;
@@ -605,7 +613,9 @@ impl Packet {
                 return Err(io::Error::new(io::ErrorKind::Other, "cannot use preserve expiry frame in non-request packets"));
             }
 
-            /* todo: !IsFeatureEnabled(FeaturePreserveExpiry) */
+            if !FEATURE_MAP.lock().unwrap().contains_key(&0x14) {
+                return Err(io::Error::new(io::ErrorKind::Other, "cannot use preserve expiry frames without enabling the feature"));
+            }
 
             write_frame_header(&mut buffer, 5, 0)?;
         }
@@ -641,23 +651,25 @@ impl Packet {
     }
 }
 
-fn listen_for_messages(stream: &TcpStream) -> io::Result<()> {
-    println!("stream opened");
-
+fn listen_for_messages(stream: &TcpStream, callback: ListenerCallback) -> io::Result<()> {
     let mut reader: BufReader<&TcpStream> = BufReader::new(stream);
 
     loop {
         let packet = Packet::from_buffer(&mut reader)?;
 
+        if packet.status != 0 {
+            return Err(io::Error::new(io::ErrorKind::Other, "got error response"));
+        }
+
         if OPAQUE_MAP.lock().unwrap().contains_key(&packet.opaque) {
             let mut opaque_map = OPAQUE_MAP.lock().unwrap();
             let callback = opaque_map.remove(&packet.opaque).unwrap();
+
             callback(&packet);
         }
 
-        // mutation
-        if packet.command == 0x57 {
-            println!("{}", packet);
+        if packet.command == 0x57 || packet.command == 0x58 || packet.command == 0x59 {
+            callback(&packet);
         }
     }
 }
@@ -680,7 +692,8 @@ fn send_hello(stream: &TcpStream) -> io::Result<()> {
 
         while i < packet.value.len() {
             let feature = BigEndian::read_u16(&packet.value[i..]);
-            println!("feature: {}", feature);
+            let mut feature_map = FEATURE_MAP.lock().unwrap();
+            feature_map.insert(feature, true);
             i += 2;
         }
     });
@@ -740,7 +753,7 @@ fn open_conn(stream: &TcpStream, group_name: &str) -> io::Result<()> {
 }
 
 fn exec_noop(stream: &TcpStream) -> io::Result<()> {
-    &Packet {
+    let _ = &Packet {
         magic: 128,
         command: 94,
         key: "enable_noop".as_bytes().to_vec(),
@@ -751,9 +764,21 @@ fn exec_noop(stream: &TcpStream) -> io::Result<()> {
     Ok(())
 }
 
+fn enable_expiry_opcode(stream: &TcpStream) -> io::Result<()> {
+    let _ = &Packet {
+        magic: 128,
+        command: 94,
+        key: "enable_expiry_opcode".as_bytes().to_vec(),
+        value: "true".as_bytes().to_vec(),
+        ..Default::default()
+    }.send(stream)?;
+
+    Ok(())
+}
+
 fn open_stream(stream: &TcpStream) -> io::Result<()> {
     for i in 0..1024 {
-        &Packet {
+        let _ = &Packet {
             magic: 128,
             command: 83,
             v_bucket: i,
@@ -768,13 +793,29 @@ fn open_stream(stream: &TcpStream) -> io::Result<()> {
     Ok(())
 }
 
+fn get_collection_id(stream: &TcpStream, scope_name: &str, collection_name: &str) -> io::Result<u32> {
+    Packet {
+        magic: 128,
+        command: 187,
+        value: format!("{}.{}", scope_name, collection_name).as_bytes().to_vec(),
+        ..Default::default()
+    }.send(stream)?.then(|packet| {
+        let collection_id = BigEndian::read_u32(&packet.extras[8..]);
+        println!("collection id: {}", collection_id)
+    });
+
+    Ok(0)
+}
+
 fn write_msg(mut stream: &TcpStream) -> io::Result<()> {
     send_hello(stream)?;
     sasl_list(stream)?;
     sasl_auth_continue_with_plain(stream, "user", "123456")?;
     select_bucket(stream, "dcp-test")?;
+    get_collection_id(stream, "_default", "_default")?;
     open_conn(stream, "example_group")?;
     exec_noop(stream)?;
+    enable_expiry_opcode(stream)?;
     open_stream(stream)?;
 
     stream.flush()?;
@@ -783,20 +824,25 @@ fn write_msg(mut stream: &TcpStream) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    let listener: ListenerCallback = |packet| {
+        println!("{}", packet);
+    };
+
     if let Ok(stream) = TcpStream::connect("localhost:11210") {
         let stream = Arc::new(stream);
         let reader = Arc::clone(&stream);
 
         thread::spawn(move || {
-            if let Ok(..) = listen_for_messages(&reader) {
-                println!("stream closed");
-            } else {
-                println!("stream cannot be opened");
+            match write_msg(&stream) {
+                Ok(..) => println!("stream started"),
+                Err(e) => println!("stream cannot started: {}", e),
             }
         });
 
-        write_msg(&stream)?;
-        sleep(time::Duration::from_secs(60)) /* todo: make infinite */;
+        match listen_for_messages(&reader, listener) {
+            Ok(..) => println!("stream stopped"),
+            Err(e) => println!("cannot listen: {}", e),
+        }
     } else {
         println!("could not connect");
     }
