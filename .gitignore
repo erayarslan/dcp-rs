@@ -1,2 +1,5 @@
-/target
-/.idea
+target/
+Cargo.lock
+.idea/
+*.iml
+dcp/Cargo.lock
