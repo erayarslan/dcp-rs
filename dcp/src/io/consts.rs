@@ -1,7 +1,7 @@
+use crate::dcp_io::packet::Packet;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use crate::dcp_io::packet::Packet;
 
 pub type CmdMagic = u8;
 pub type CmdCode = u8;

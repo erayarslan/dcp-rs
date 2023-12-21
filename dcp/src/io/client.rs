@@ -1,10 +1,10 @@
+use crate::dcp_io::consts::{ListenerCallback, PacketCallback};
 use crate::dcp_io::packet::Packet;
 use std::collections::HashMap;
 use std::io;
 use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::sync::Mutex;
-use crate::dcp_io::consts::{ListenerCallback, PacketCallback};
 
 pub struct Client {
     tcp_stream: Mutex<TcpStream>,

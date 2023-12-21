@@ -2,11 +2,11 @@
 mod dcp_io;
 
 use crate::dcp_io::client::Client;
+pub use crate::dcp_io::consts::ListenerCallback;
 use crate::dcp_io::couchbase::Couchbase;
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::{io, thread};
-pub use crate::dcp_io::consts::ListenerCallback;
 
 pub struct GroupConfig {
     pub name: String,
@@ -46,7 +46,8 @@ impl Dcp {
         )?;
         couchbase.select_bucket(self.config.bucket.as_str())?;
         for collection_name in &self.config.collection_names {
-            couchbase.get_collection_id(self.config.scope_name.as_str(), collection_name.as_str())?;
+            couchbase
+                .get_collection_id(self.config.scope_name.as_str(), collection_name.as_str())?;
         }
         couchbase.open_conn(self.config.dcp.group.name.as_str())?;
         couchbase.exec_noop()?;

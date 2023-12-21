@@ -1,21 +1,17 @@
-use dcp_rs::{Dcp, Config, DcpConfig, GroupConfig, ListenerCallback};
+use dcp_rs::{Config, Dcp, DcpConfig, GroupConfig, ListenerCallback};
 
 fn main() -> Result<(), std::io::Error> {
     let config = Config {
-        hosts: vec![
-            "localhost:11210".to_string()
-        ],
+        hosts: vec!["localhost:11210".to_string()],
         username: "user".to_string(),
         password: "123456".to_string(),
         bucket: "dcp-test".to_string(),
         scope_name: "_default".to_string(),
-        collection_names: vec![
-            "_default".to_string()
-        ],
+        collection_names: vec!["_default".to_string()],
         dcp: DcpConfig {
             group: GroupConfig {
-                name: "group_name".to_string()
-            }
+                name: "group_name".to_string(),
+            },
         },
     };
 
