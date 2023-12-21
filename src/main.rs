@@ -168,10 +168,12 @@ struct UserImpersonationFrame {
 
 struct PreserveExpiryFrame {}
 
+#[allow(dead_code)]
 struct ReadUnitsFrame {
     read_units: u16,
 }
 
+#[allow(dead_code)]
 struct WriteUnitsFrame {
     write_units: u16,
 }
@@ -219,20 +221,14 @@ pub struct Packet {
 impl Display for Packet {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let key = String::from_utf8_lossy(&self.key);
-        let extras = String::from_utf8_lossy(&self.extras);
         let value = String::from_utf8_lossy(&self.value);
 
-        write!(f, "Packet {{ magic: {}, command: {}, datatype: {}, status: {}, v_bucket: {}, opaque: {}, cas: {}, collection_id: {}, key: {}, extras: {}, value: {} }}",
+        write!(f, "Packet {{ magic: {:04}, command: {:04}, status: {:02}, v_bucket: {:04}, key: {}, value: {} }}",
                self.magic,
                self.command,
-               self.datatype,
                self.status,
                self.v_bucket,
-               self.opaque,
-               self.cas,
-               self.collection_id,
                key,
-               extras,
                value,
         )
     }
@@ -412,8 +408,7 @@ impl Packet {
     }
 
     fn to_buffer(&self) -> io::Result<Vec<u8>> {
-        let mut encoded_key: Vec<u8> = vec![];
-        encoded_key = self.key.clone();
+        let mut encoded_key: Vec<u8> = self.key.clone();
         let extras = &self.extras;
 
         if FEATURE_MAP.lock().unwrap().contains_key(&0x12) {
@@ -823,28 +818,32 @@ fn write_msg(mut stream: &TcpStream) -> io::Result<()> {
     Ok(())
 }
 
+// todo: logger
 fn main() -> io::Result<()> {
     let listener: ListenerCallback = |packet| {
         println!("{}", packet);
     };
 
-    if let Ok(stream) = TcpStream::connect("localhost:11210") {
-        let stream = Arc::new(stream);
-        let reader = Arc::clone(&stream);
+    match TcpStream::connect("localhost:11210") {
+        Ok(stream) => {
+            let stream = Arc::new(stream);
+            let reader = Arc::clone(&stream);
 
-        thread::spawn(move || {
-            match write_msg(&stream) {
-                Ok(..) => println!("stream started"),
-                Err(e) => println!("stream cannot started: {}", e),
+            thread::spawn(move || {
+                match write_msg(&stream) {
+                    Ok(..) => println!("stream started"),
+                    Err(e) => println!("stream cannot started: {}", e),
+                }
+            });
+
+            match listen_for_messages(&reader, listener) {
+                Ok(..) => println!("stream stopped"),
+                Err(e) => println!("cannot listen: {}", e),
             }
-        });
-
-        match listen_for_messages(&reader, listener) {
-            Ok(..) => println!("stream stopped"),
-            Err(e) => println!("cannot listen: {}", e),
         }
-    } else {
-        println!("could not connect");
+        Err(e) => {
+            println!("cannot connect: {}", e);
+        }
     }
 
     Ok(())
