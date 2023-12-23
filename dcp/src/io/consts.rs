@@ -1,14 +1,14 @@
 use crate::dcp_io::packet::Packet;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use std::io;
 use std::sync::Mutex;
 
 pub type CmdMagic = u8;
 pub type CmdCode = u8;
 pub type StatusCode = u16;
-pub type PacketCallback = fn(&Packet);
-pub type ListenerCallback = fn(&Packet);
-
+pub type PacketCallbackResult<T = ()> = io::Result<T>;
+pub type PacketCallback = Box<dyn FnMut(&Packet) -> PacketCallbackResult + Send + Sync + 'static>;
 pub static CMD_MAGIC_REQ: CmdMagic = 0x80;
 pub static CMD_MAGIC_RES: CmdMagic = 0x81;
 pub static CMD_MAGIC_SERVER_REQ: CmdMagic = 0x82;

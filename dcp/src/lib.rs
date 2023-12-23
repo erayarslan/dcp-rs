@@ -2,7 +2,7 @@
 mod dcp_io;
 
 use crate::dcp_io::client::Client;
-pub use crate::dcp_io::consts::ListenerCallback;
+use crate::dcp_io::consts::PacketCallback;
 use crate::dcp_io::couchbase::Couchbase;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -27,66 +27,43 @@ pub struct Config {
 }
 
 pub struct Dcp {
-    config: Config,
-    listener: ListenerCallback,
+    config: Arc<Config>,
+    client: Arc<Client>,
 }
 
-// todo: logger
 impl Dcp {
-    pub fn new(config: Config, listener: ListenerCallback) -> Self {
-        Self { config, listener }
+    pub fn new(config: Config) -> io::Result<Self> {
+        let tcp_stream = TcpStream::connect(config.hosts[0].as_str())?;
+        let client: Client = Client::new(tcp_stream);
+
+        Ok(Self {
+            config: Arc::new(config),
+            client: Arc::new(client),
+        })
     }
 
-    fn connect(&self, couchbase: &mut Couchbase, client: &Client) -> io::Result<()> {
-        couchbase.send_hello()?;
-        couchbase.sasl_list()?;
-        couchbase.sasl_auth_continue_with_plain(
-            self.config.username.as_str(),
-            self.config.password.as_str(),
-        )?;
-        couchbase.select_bucket(self.config.bucket.as_str())?;
-        for collection_name in &self.config.collection_names {
-            couchbase
-                .get_collection_id(self.config.scope_name.as_str(), collection_name.as_str())?;
-        }
-        couchbase.open_conn(self.config.dcp.group.name.as_str())?;
-        couchbase.exec_noop()?;
-        couchbase.enable_expiry_opcode()?;
-        couchbase.open_stream()?;
-
-        client.flush()?;
-
-        Ok(())
+    pub fn add_listener(&self, callback: PacketCallback) {
+        self.client.add_listener(callback);
     }
 
-    pub fn start(self) -> io::Result<()> {
-        match TcpStream::connect(self.config.hosts[0].as_str()) {
-            Ok(tcp_stream) => {
-                let client = Client::new(tcp_stream);
-                let stream = Arc::new(client);
-                let reader = Arc::clone(&stream);
+    pub fn start(&self) -> io::Result<()> {
+        let client = Arc::clone(&self.client);
+        let config = Arc::clone(&self.config);
 
-                let shared_self = Arc::new(self);
-                let self_copy = Arc::clone(&shared_self);
+        thread::spawn(move || {
+            let couchbase = Couchbase::new(&client);
 
-                thread::spawn(move || {
-                    let mut couchbase = Couchbase::new(&stream);
-                    match &shared_self.connect(&mut couchbase, &stream) {
-                        Ok(..) => println!("stream started"),
-                        Err(e) => println!("stream cannot started: {}", e),
-                    }
-                });
-
-                match reader.listen(self_copy.listener) {
-                    Ok(..) => println!("stream stopped"),
-                    Err(e) => println!("cannot listen: {}", e),
-                }
+            match couchbase.connect(&config) {
+                Ok(..) => log::info!("stream started"),
+                Err(e) => log::error!("stream cannot started: {}", e),
             }
-            Err(e) => {
-                println!("cannot connect: {}", e);
-            }
-        }
+        });
 
+        self.client.start()
+    }
+
+    pub fn stop(&self) -> io::Result<()> {
+        self.client.stop();
         Ok(())
     }
 }

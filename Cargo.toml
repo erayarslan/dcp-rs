@@ -1,2 +1,3 @@
 [workspace]
 members = ["dcp"]
+resolver = "2"

@@ -2,6 +2,7 @@ use crate::dcp_io::client::Client;
 use crate::dcp_io::consts::FEATURE_MAP;
 use crate::dcp_io::packet::Packet;
 use crate::dcp_io::utils::{format_cb_uid, random_cb_uid};
+use crate::Config;
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use std::io;
 use std::io::Write;
@@ -18,7 +19,7 @@ impl Couchbase<'_> {
         }
     }
 
-    pub(crate) fn send_hello(&mut self) -> io::Result<()> {
+    pub(crate) fn send_hello(&self) -> io::Result<()> {
         let futures: Vec<u16> = vec![
             2, 6, 8, 30, 29, 12, 7, 11, 10, 19, 18, 16, 23, 25, 20, 28, 17,
         ];
@@ -43,21 +44,26 @@ impl Couchbase<'_> {
 
         let client = self.client.lock().unwrap();
         client.send(&packet)?;
-        client.then(&packet, |packet| {
-            let mut i = 0;
+        client.then(
+            &packet,
+            Box::new(|packet| {
+                let mut i = 0;
 
-            while i < packet.value.len() {
-                let feature = BigEndian::read_u16(&packet.value[i..]);
-                let mut feature_map = FEATURE_MAP.lock().unwrap();
-                feature_map.insert(feature, true);
-                i += 2;
-            }
-        })?;
+                while i < packet.value.len() {
+                    let feature = BigEndian::read_u16(&packet.value[i..]);
+                    let mut feature_map = FEATURE_MAP.lock().unwrap();
+                    feature_map.insert(feature, true);
+                    i += 2;
+                }
+
+                Ok(())
+            }),
+        )?;
 
         Ok(())
     }
 
-    pub(crate) fn sasl_list(&mut self) -> io::Result<()> {
+    pub(crate) fn sasl_list(&self) -> io::Result<()> {
         let packet = Packet {
             magic: 128,
             command: 32,
@@ -71,7 +77,7 @@ impl Couchbase<'_> {
     }
 
     pub(crate) fn sasl_auth_continue_with_plain(
-        &mut self,
+        &self,
         username: &str,
         password: &str,
     ) -> io::Result<()> {
@@ -95,7 +101,7 @@ impl Couchbase<'_> {
         Ok(())
     }
 
-    pub(crate) fn select_bucket(&mut self, bucket_name: &str) -> io::Result<()> {
+    pub(crate) fn select_bucket(&self, bucket_name: &str) -> io::Result<()> {
         let packet = Packet {
             magic: 128,
             command: 137,
@@ -109,7 +115,7 @@ impl Couchbase<'_> {
         Ok(())
     }
 
-    pub(crate) fn open_conn(&mut self, group_name: &str) -> io::Result<()> {
+    pub(crate) fn open_conn(&self, group_name: &str) -> io::Result<()> {
         let packet = Packet {
             magic: 128,
             command: 80,
@@ -124,7 +130,7 @@ impl Couchbase<'_> {
         Ok(())
     }
 
-    pub(crate) fn exec_noop(&mut self) -> io::Result<()> {
+    pub(crate) fn exec_noop(&self) -> io::Result<()> {
         let packet = Packet {
             magic: 128,
             command: 94,
@@ -139,7 +145,8 @@ impl Couchbase<'_> {
         Ok(())
     }
 
-    pub(crate) fn enable_expiry_opcode(&mut self) -> io::Result<()> {
+    #[allow(dead_code)]
+    pub(crate) fn enable_expiry_opcode(&self) -> io::Result<()> {
         let packet = Packet {
             magic: 128,
             command: 94,
@@ -154,8 +161,15 @@ impl Couchbase<'_> {
         Ok(())
     }
 
-    pub(crate) fn open_stream(&mut self) -> io::Result<()> {
+    pub(crate) fn open_stream(&self) -> io::Result<()> {
         let client = self.client.lock().unwrap();
+
+        let mut value = "{\"uid\":\"0\",\"collections\":[\"0\"]}"
+            .as_bytes()
+            .to_vec(); // todo: fill with real data
+        if !FEATURE_MAP.lock().unwrap().contains_key(&0x12) {
+            value = vec![0u8; 0];
+        }
 
         for i in 0..1024 {
             let packet = Packet {
@@ -167,9 +181,7 @@ impl Couchbase<'_> {
                     255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     0,
                 ],
-                value: "{\"uid\":\"0\",\"collections\":[\"0\"]}"
-                    .as_bytes()
-                    .to_vec(), // todo: fill with real data
+                value: value.clone(),
                 ..Default::default()
             };
 
@@ -180,7 +192,7 @@ impl Couchbase<'_> {
     }
 
     pub(crate) fn get_collection_id(
-        &mut self,
+        &self,
         scope_name: &str,
         collection_name: &str,
     ) -> io::Result<u32> {
@@ -195,11 +207,36 @@ impl Couchbase<'_> {
 
         let client = self.client.lock().unwrap();
         client.send(&packet)?;
-        client.then(&packet, |packet| {
-            let collection_id = BigEndian::read_u32(&packet.extras[8..]);
-            println!("collection id: {}", collection_id)
-        })?;
+        client.then(
+            &packet,
+            Box::new(|packet| {
+                let _ = BigEndian::read_u32(&packet.extras[8..]);
+
+                Ok(())
+            }),
+        )?;
 
         Ok(0)
+    }
+
+    pub(crate) fn connect(&self, config: &Config) -> io::Result<()> {
+        self.send_hello()?;
+        self.sasl_list()?;
+        self.sasl_auth_continue_with_plain(config.username.as_str(), config.password.as_str())?;
+        self.select_bucket(config.bucket.as_str())?;
+        if FEATURE_MAP.lock().unwrap().contains_key(&0x12) {
+            for collection_name in &config.collection_names {
+                self.get_collection_id(config.scope_name.as_str(), collection_name.as_str())?;
+            }
+        }
+        self.open_conn(config.dcp.group.name.as_str())?;
+        self.exec_noop()?;
+        /* self.enable_expiry_opcode()?; todo: version */
+        self.open_stream()?;
+
+        let client = self.client.lock().unwrap();
+        client.flush()?;
+
+        Ok(())
     }
 }

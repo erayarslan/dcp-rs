@@ -1,4 +1,4 @@
-use dcp_rs::{Config, Dcp, DcpConfig, GroupConfig, ListenerCallback};
+use dcp_rs::{Config, Dcp, DcpConfig, GroupConfig};
 
 fn main() -> Result<(), std::io::Error> {
     let config = Config {
@@ -15,12 +15,12 @@ fn main() -> Result<(), std::io::Error> {
         },
     };
 
-    let listener: ListenerCallback = |event| {
+    let dcp = Dcp::new(config)?;
+    dcp.add_listener(Box::new(|event| {
         println!("event: {}", event);
-    };
 
-    let dcp = Dcp::new(config, listener);
-
+        Ok(())
+    }));
     dcp.start()?;
 
     return Ok(());

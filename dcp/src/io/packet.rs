@@ -63,8 +63,8 @@ pub struct Packet {
     pub(crate) opaque: u32,
     pub(crate) cas: u64,
     pub(crate) collection_id: u32,
-    pub(crate) key: Vec<u8>,
-    pub(crate) extras: Vec<u8>,
+    pub key: Vec<u8>,
+    pub extras: Vec<u8>,
     pub(crate) value: Vec<u8>,
 
     pub(crate) barrier_frame: Option<BarrierFrame>,
