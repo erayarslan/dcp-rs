@@ -8,7 +8,7 @@ use crate::dcp_io::utils::{
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::TcpStream;
 
 pub struct BarrierFrame {}
@@ -130,7 +130,7 @@ impl Default for Packet {
 }
 
 impl Packet {
-    pub fn from_buffer(reader: &mut BufReader<&TcpStream>) -> io::Result<Self> {
+    pub fn from_buffer(mut reader: &TcpStream) -> io::Result<Self> {
         let mut packet: Packet = Default::default();
 
         let mut header_buf = [0u8; 24];
@@ -158,11 +158,11 @@ impl Packet {
 
         packet.command = header_buf[1];
         packet.datatype = header_buf[5];
-        packet.opaque = BigEndian::read_u32(&mut header_buf[12..]);
-        packet.cas = BigEndian::read_u64(&mut header_buf[16..]);
+        packet.opaque = BigEndian::read_u32(&header_buf[12..]);
+        packet.cas = BigEndian::read_u64(&header_buf[16..]);
 
         let ext_len = header_buf[4];
-        let mut key_len = BigEndian::read_u16(&mut header_buf[2..]) as i32;
+        let mut key_len = BigEndian::read_u16(&header_buf[2..]) as i32;
         let mut frames_len: usize = 0;
 
         if pkt_magic == CMD_MAGIC_REQ_EXT || pkt_magic == CMD_MAGIC_RES_EXT {

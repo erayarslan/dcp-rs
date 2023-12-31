@@ -2,7 +2,7 @@ use crate::dcp_io::consts::PacketCallback;
 use crate::dcp_io::packet::Packet;
 use std::collections::HashMap;
 use std::io;
-use std::io::{BufReader, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -51,11 +51,9 @@ impl Client {
 
     pub fn start(&self) -> io::Result<()> {
         let tcp_stream = self.tcp_stream.lock().unwrap().try_clone()?;
-        let mut reader: BufReader<&TcpStream> = BufReader::new(&tcp_stream);
-
         self.running.store(true, Ordering::Relaxed);
         while self.running.load(Ordering::Relaxed) {
-            let packet = Packet::from_buffer(&mut reader);
+            let packet = Packet::from_buffer(&tcp_stream);
             if packet.is_err() {
                 self.running.store(false, Ordering::Relaxed);
                 return Err(io::Error::new(

@@ -36,7 +36,7 @@ jobs:
 
       - name: Test DCP
         run: |
-          cargo test --package dcp-rs --test integration_test -- --exact --nocapture
+          cargo test --release --package dcp-rs --test integration_test -- --exact --nocapture
         env:
           RUST_LOG: debug
           CB_VERSION: ${{ matrix.version }}
